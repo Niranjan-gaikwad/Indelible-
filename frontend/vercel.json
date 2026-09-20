@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://durable-workflow-engine.onrender.com"
+      "destination": "https://durable-workflow-engine.onrender.com/api/:path*"
     },
     {
       "source": "/(.*)",
