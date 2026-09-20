@@ -1,0 +1,4 @@
+# Replace with your actual domain before deploying.
+yourdomain.com {
+    reverse_proxy frontend:80
+}

@@ -1,0 +1,13 @@
+[Unit]
+Description=NeverFail Durable Engine
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/absolute/path/to/neverfail-demo/backend
+ExecStart=/usr/bin/java -jar /absolute/path/to/neverfail-demo/backend/target/backend-0.0.1-SNAPSHOT.jar
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
