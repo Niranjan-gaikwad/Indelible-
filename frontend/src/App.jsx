@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import AuthPages from './AuthPages.jsx';
 import UpiPinModal from './UpiPinModal.jsx';
+import LiveLogViewer from './LiveLogViewer.jsx'; // <-- IMPORTED THE TERMINAL
 
 const API_BASE = "/api";
 
@@ -11,14 +12,12 @@ const STEPS = [
   { key: "send_notification", label: "Dispatching SMS" },
 ];
 
-// Mock external users for the selection dashboard
 const MOCK_RECIPIENTS = [
   { id: 101, name: "Alex Smith", handle: "@alexs", initials: "AS", color: "bg-blue-100 text-blue-700" },
   { id: 102, name: "Priya Sharma", handle: "@priya", initials: "PS", color: "bg-purple-100 text-purple-700" },
   { id: 103, name: "David Chen", handle: "@davidc", initials: "DC", color: "bg-emerald-100 text-emerald-700" },
 ];
 
-// Vector Icons replacing emojis
 const Icons = {
   Home: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" /></svg>,
   History: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>,
@@ -59,8 +58,17 @@ function Dashboard({ username, onLogout }) {
   const [cards, setCards] = useState([]);
   const [selectedCardId, setSelectedCardId] = useState(null);
   const [newCard, setNewCard] = useState({ nickname: "", cardNumber: "", expiry: "" });
-  const [showDevTools, setShowDevTools] = useState(false);
   const [showPin, setShowPin] = useState(false);
+
+  // NEW: State for the Log Viewer Drawer
+  const [logs, setLogs] = useState([]);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+
+  // NEW: Helper to add logs to the terminal
+  const addLog = (message, type = 'INFO') => {
+    const time = new Date().toISOString().split('T')[1].slice(0, 12);
+    setLogs(prev => [...prev, { time, message, type }]);
+  };
 
   const refreshOrders = () => authFetch("/orders/my").then(r => r.ok ? r.json() : []).then(setMyOrders).catch(() => {});
   const refreshCards = () => authFetch("/payment-methods").then(r => r.ok ? r.json() : []).then(data => {
@@ -84,33 +92,51 @@ function Dashboard({ username, onLogout }) {
     if (!activeWorkflowId) return;
     const interval = setInterval(async () => {
       try {
+        if (isDrawerOpen) addLog(`GET /api/workflows/${activeWorkflowId}/events - Polling state`, "POLL");
+        
         const res = await authFetch(`/workflows/${activeWorkflowId}/events`);
         if (!res.ok) throw new Error("down");
         const fetchedEvents = await res.json();
+        
+        if (serverDead) addLog("200 OK: Connection restored. Engine is online.", "SUCCESS");
+        
         setEvents(fetchedEvents); setServerDead(false);
         const isDone = fetchedEvents.some(e => 
           ((e.STEP_NAME || e.step_name) === "send_notification" && (e.STATUS || e.status) === "COMPLETED") ||
           ((e.STEP_NAME || e.step_name) === "reserve_stock" && (e.STATUS || e.status) === "COMPENSATED")
         );
-        if (isDone) clearInterval(interval);
-      } catch (err) { setServerDead(true); }
+        if (isDone) {
+          addLog("WORKFLOW COMPLETED: Idempotent orchestration finished.", "SUCCESS");
+          clearInterval(interval);
+        }
+      } catch (err) { 
+        setServerDead(true); 
+        addLog("502 BAD GATEWAY: Server unreachable. Retrying in 500ms...", "ERROR");
+      }
     }, 500);
     return () => clearInterval(interval);
-  }, [activeWorkflowId]);
+  }, [activeWorkflowId, serverDead, isDrawerOpen]);
 
   const handleTransfer = async () => {
     if (!selectedCardId) { alert("Add a payment method first."); return; }
     setEvents([]); setServerDead(false);
+    setIsDrawerOpen(true); // Open drawer on transfer start
+    addLog("POST /api/orders/checkout - Initiating Distributed Transaction", "INFO");
     try {
       const res = await authFetch("/orders/checkout", { method: "POST" });
       const data = await res.json();
       setActiveWorkflowId(data.workflowId);
+      addLog(`201 CREATED: Orchestrating Workflow ID: ${data.workflowId}`, "SUCCESS");
       refreshOrders();
-    } catch (e) { alert("Network error: backend unreachable."); }
+    } catch (e) { 
+      addLog("NETWORK FAULT: Engine unreachable on initialization.", "ERROR");
+    }
   };
 
   const resetDemo = () => {
     setActiveWorkflowId(null); setEvents([]); setSelectedRecipient(null); setAmount("0.00");
+    setLogs([]); // Clear logs on reset
+    setIsDrawerOpen(false); // Close drawer
     const url = new URL(window.location); url.searchParams.delete("wf"); window.history.replaceState({}, "", url);
   };
 
@@ -136,7 +162,19 @@ function Dashboard({ username, onLogout }) {
   const handleSoftCrash = async () => authFetch(`/workflows/${activeWorkflowId}/crash`, { method: "POST" });
   const handleFailPayment = async () => { await authFetch(`/workflows/${activeWorkflowId}/fail-payment`, { method: "POST" }); refreshOrders(); };
   const handleResume = async () => { await authFetch(`/workflows/${activeWorkflowId}/resume`, { method: "POST" }); refreshOrders(); };
-  const handleHardKill = async () => { authFetch("/admin/kill", { method: "POST" }).catch(() => {}); setServerDead(true); };
+  
+  const handleHardKill = async () => { 
+    setIsDrawerOpen(true); // Pop the drawer open for the crash
+    addLog("WARNING: Administrator triggered SIGTERM kill signal", "WARN");
+    addLog("POST /api/admin/kill - Sending fatal interrupt to Render container...", "INFO");
+    try {
+      await authFetch("/admin/kill", { method: "POST" });
+    } catch (e) {
+      // It's expected to fail because the server dies instantly
+    }
+    setServerDead(true); 
+    addLog("CONNECTION SEVERED: JVM process destroyed. Memory wiped.", "ERROR");
+  };
 
   const getStepStatus = (stepKey) => {
     const stepEvents = events.filter(e => (e.STEP_NAME || e.step_name) === stepKey);
@@ -151,14 +189,14 @@ function Dashboard({ username, onLogout }) {
   const TAB_LABELS = { home: "Send Money", history: "Transaction History", cards: "Payment Methods", profile: "My Profile", settings: "Account Settings" };
 
   return (
-    <div className="min-h-screen bg-slate-100 flex font-sans">
+    <div className="min-h-screen bg-slate-100 flex font-sans relative">
       
       {showPin && (
         <UpiPinModal amount={amount} onCancel={() => setShowPin(false)} onSuccess={() => { setShowPin(false); handleTransfer(); }} />
       )}
 
       {/* SIDEBAR NAVIGATION */}
-      <div className="w-64 bg-slate-900 text-white flex flex-col shadow-2xl z-10 fixed h-full">
+      <div className="w-64 bg-slate-900 text-white flex flex-col shadow-2xl z-10 fixed h-full pb-10">
         <div className="p-6 border-b border-slate-800">
           <span className="text-2xl font-bold tracking-tight">Indelible</span>
           <div className="text-slate-400 text-xs mt-1 font-mono uppercase tracking-widest">Engine Demo</div>
@@ -197,15 +235,18 @@ function Dashboard({ username, onLogout }) {
       </div>
 
       {/* MAIN CONTENT AREA */}
-      <div className="flex-1 ml-64 flex flex-col h-screen overflow-y-auto bg-slate-50">
+      <div className="flex-1 ml-64 flex flex-col h-screen overflow-y-auto bg-slate-50 pb-20">
         <header className="bg-white border-b border-slate-200 px-8 py-6 flex justify-between items-center sticky top-0 z-0">
           <h1 className="text-2xl font-bold text-slate-800">{TAB_LABELS[tab]}</h1>
           <div className="text-sm font-medium text-slate-500 bg-slate-100 px-4 py-2 rounded-full border border-slate-200 flex items-center gap-2">
-            Status: <span className="text-emerald-600 font-bold flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>Engine Online</span>
+            Status: <span className="text-emerald-600 font-bold flex items-center gap-1">
+              <span className={`w-2 h-2 rounded-full ${serverDead ? 'bg-red-500' : 'bg-emerald-500 animate-pulse'} inline-block`}></span>
+              {serverDead ? 'Engine Offline' : 'Engine Online'}
+            </span>
           </div>
         </header>
 
-        <main className="p-8 max-w-5xl mx-auto w-full">
+        <main className="p-8 max-w-5xl mx-auto w-full mb-12">
           
           {/* SEND MONEY TAB */}
           {tab === "home" && (
@@ -300,7 +341,7 @@ function Dashboard({ username, onLogout }) {
 
                   <div className="max-w-xl mx-auto">
                     {hasCrashed && (
-                      <div className="bg-red-50 border border-red-200 p-6 rounded-xl text-center">
+                      <div className="bg-red-50 border border-red-200 p-6 rounded-xl text-center shadow-inner">
                         <p className="text-red-700 font-bold text-lg mb-1">Server Process Killed</p>
                         <p className="text-red-600 text-sm">Awaiting external infrastructure restart. State is preserved safely in Postgres.</p>
                       </div>
@@ -473,26 +514,46 @@ function Dashboard({ username, onLogout }) {
       </div>
 
       {/* ADMIN PANEL - Fault Injection Tools */}
-      <div className="fixed bottom-0 right-0 p-6 opacity-20 hover:opacity-100 transition-opacity z-50">
+      <div className="fixed top-1/4 right-0 p-6 opacity-20 hover:opacity-100 transition-opacity z-40">
         <div className="text-xs text-slate-500 text-right mb-2 font-mono font-bold tracking-widest">HOVER: ENGINE ADMIN</div>
         <div className="bg-slate-900 p-5 rounded-2xl shadow-2xl border border-slate-700 flex flex-col gap-3 w-80">
           <div className="text-emerald-400 text-[10px] font-bold tracking-widest uppercase mb-2 border-b border-slate-800 pb-2">Fault Injection Tools</div>
-          <button onClick={handleHardKill} className="w-full py-2.5 bg-red-600/90 hover:bg-red-500 text-white text-xs font-bold rounded-lg flex justify-between px-4 transition-colors"><span>CRASH SERVER (Hard)</span><span>💥</span></button>
-          <button onClick={handleSoftCrash} className="w-full py-2.5 bg-amber-600/90 hover:bg-amber-500 text-white text-xs font-bold rounded-lg flex justify-between px-4 transition-colors"><span>INTERRUPT THREAD (Soft)</span><span>⚡</span></button>
-          <button onClick={handleFailPayment} className="w-full py-2.5 bg-orange-600/90 hover:bg-orange-500 text-white text-xs font-bold rounded-lg flex justify-between px-4 transition-colors"><span>DECLINE PAYMENT (Saga)</span><span>✗</span></button>
-          <button onClick={handleResume} className="w-full py-2.5 bg-blue-600/90 hover:bg-blue-500 text-white text-xs font-bold rounded-lg flex justify-between px-4 transition-colors"><span>RESUME ENGINE</span><span>🔄</span></button>
-          {events.length > 0 && (
-            <div className="mt-2 bg-slate-950 p-3 rounded-lg text-[10px] font-mono h-40 overflow-y-auto border border-slate-800 shadow-inner">
-              {events.map((e, i) => (
-                <div key={i} className="mb-2 border-b border-slate-800/50 pb-2 last:border-0 last:pb-0">
-                  <span className="text-indigo-400 font-bold">{e.STEP_NAME || e.step_name}</span><br/>
-                  <span className={["COMPLETED", "SKIPPED"].includes(e.STATUS || e.status) ? "text-emerald-400" : "text-amber-400"}>[{e.STATUS || e.status}]</span>
-                </div>
-              ))}
-            </div>
-          )}
+          
+          <button onClick={handleHardKill} className="w-full py-2.5 bg-red-600/90 hover:bg-red-500 text-white text-xs font-bold rounded-lg flex justify-between px-4 transition-colors">
+            <span>CRASH SERVER (Hard)</span><span>💥</span>
+          </button>
+          
+          <button onClick={handleSoftCrash} className="w-full py-2.5 bg-amber-600/90 hover:bg-amber-500 text-white text-xs font-bold rounded-lg flex justify-between px-4 transition-colors">
+            <span>INTERRUPT THREAD (Soft)</span><span>⚡</span>
+          </button>
+          
+          <button onClick={handleFailPayment} className="w-full py-2.5 bg-orange-600/90 hover:bg-orange-500 text-white text-xs font-bold rounded-lg flex justify-between px-4 transition-colors">
+            <span>DECLINE PAYMENT (Saga)</span><span>✗</span>
+          </button>
+          
+          <button onClick={handleResume} className="w-full py-2.5 bg-blue-600/90 hover:bg-blue-500 text-white text-xs font-bold rounded-lg flex justify-between px-4 transition-colors">
+            <span>RESUME ENGINE</span><span>🔄</span>
+          </button>
         </div>
       </div>
+
+      {/* NEW: THE LIVE SYSTEM LOGS DRAWER */}
+      <div className="fixed bottom-0 left-64 right-0 flex flex-col items-center pointer-events-none z-50">
+        <button 
+          onClick={() => setIsDrawerOpen(!isDrawerOpen)}
+          className={`bg-[#0a0a0a] text-gray-400 text-xs px-8 py-2 rounded-t-xl border border-b-0 border-gray-800 hover:text-white transition-all pointer-events-auto flex items-center gap-2 shadow-[0_-10px_20px_rgba(0,0,0,0.2)] ${isDrawerOpen ? 'bg-indigo-900/40 text-indigo-300 border-indigo-500/50' : ''}`}
+        >
+          {isDrawerOpen ? "▼ Hide Network Telemetry" : "▲ View Network Telemetry"}
+          {serverDead && !isDrawerOpen && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>}
+        </button>
+
+        {isDrawerOpen && (
+          <div className="w-full max-w-4xl bg-[#0a0a0a] pointer-events-auto shadow-[0_-20px_50px_rgba(0,0,0,0.5)]">
+            <LiveLogViewer logs={logs} />
+          </div>
+        )}
+      </div>
+
     </div>
   );
 }
