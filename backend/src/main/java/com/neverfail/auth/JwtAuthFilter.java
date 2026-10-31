@@ -13,7 +13,7 @@ public class JwtAuthFilter implements Filter {
     public JwtAuthFilter(JwtUtil jwtUtil) { this.jwtUtil = jwtUtil; }
 
     // Routes that don't require a token. Everything else under /api/** does.
-    private static final String[] PUBLIC_PATHS = { "/api/auth/register", "/api/auth/login" };
+    private static final String[] PUBLIC_PATHS = { "/api/auth/register", "/api/auth/login", "/api/auth/google" };
 
     @Override
     public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
