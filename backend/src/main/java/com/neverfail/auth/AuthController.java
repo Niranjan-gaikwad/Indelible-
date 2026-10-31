@@ -70,7 +70,6 @@ public class AuthController {
         }
 
         try {
-            // 1. Verify the token with Google
             RestTemplate restTemplate = new RestTemplate();
             HttpHeaders headers = new HttpHeaders();
             headers.setBearerAuth(req.token());
@@ -83,10 +82,8 @@ public class AuthController {
                     Map.class
             );
 
-            // Corrected typing for the generic map
             @SuppressWarnings("unchecked")
             Map<String, Object> payload = (Map<String, Object>) googleResponse.getBody();
-            
             if (payload == null || !payload.containsKey("email")) {
                 throw new ResponseException(401, "Invalid Google token payload");
             }
@@ -94,7 +91,6 @@ public class AuthController {
             String email = (String) payload.get("email");
             String defaultUsername = email.split("@")[0];
 
-            // 2. Lookup the user by email in the database
             Optional> userRow = db.sql(
                     "SELECT id, username FROM users WHERE email = :e")
                     .param("e", email).query().listOfRows().stream().findFirst();
@@ -103,11 +99,9 @@ public class AuthController {
             String finalUsername;
 
             if (userRow.isPresent()) {
-                // User exists, extract their details
                 userId = ((Number) userRow.get().get("id")).longValue();
                 finalUsername = (String) userRow.get().get("username");
             } else {
-                // 3. New user: Register them automatically
                 String randomHash = encoder.encode(UUID.randomUUID().toString());
                 
                 try {
@@ -125,7 +119,6 @@ public class AuthController {
                 }
             }
 
-            // 4. Issue the internal JWT
             String token = jwtUtil.generateToken(userId, finalUsername);
             return Map.of("token", token, "userId", userId, "username", finalUsername);
 
