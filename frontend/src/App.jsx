@@ -65,8 +65,15 @@ function Dashboard({ username, onLogout }) {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
   // NEW: Helper to add logs to the terminal
+// NEW: Helper to add logs to the terminal
   const addLog = (message, type = 'INFO') => {
-    const time = new Date().toISOString().split('T')[1].slice(0, 12);
+    // Generate absolute local wall-clock time (e.g. 07:01:45 AM)
+    const time = new Date().toLocaleTimeString('en-IN', { 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      second: '2-digit', 
+      hour12: true 
+    });
     setLogs(prev => [...prev, { time, message, type }]);
   };
 
