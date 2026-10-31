@@ -83,7 +83,10 @@ public class AuthController {
                     Map.class
             );
 
-            Map<String, Object> payload = googleResponse.getBody();
+            // Corrected typing for the generic map
+            @SuppressWarnings("unchecked")
+            Map<String, Object> payload = (Map<String, Object>) googleResponse.getBody();
+            
             if (payload == null || !payload.containsKey("email")) {
                 throw new ResponseException(401, "Invalid Google token payload");
             }
@@ -92,20 +95,19 @@ public class AuthController {
             String defaultUsername = email.split("@")[0];
 
             // 2. Lookup the user by email in the database
-            Optional> row = db.sql(
+            Optional> userRow = db.sql(
                     "SELECT id, username FROM users WHERE email = :e")
                     .param("e", email).query().listOfRows().stream().findFirst();
 
             Long userId;
             String finalUsername;
 
-            if (row.isPresent()) {
+            if (userRow.isPresent()) {
                 // User exists, extract their details
-                userId = ((Number) row.get().get("id")).longValue();
-                finalUsername = (String) row.get().get("username");
+                userId = ((Number) userRow.get().get("id")).longValue();
+                finalUsername = (String) userRow.get().get("username");
             } else {
                 // 3. New user: Register them automatically
-                // Generate a strong random password hash since they authenticate via Google
                 String randomHash = encoder.encode(UUID.randomUUID().toString());
                 
                 try {
@@ -115,7 +117,6 @@ public class AuthController {
                         .query(Long.class).single();
                     finalUsername = defaultUsername;
                 } catch (DataIntegrityViolationException e) {
-                    // Fallback if the extracted username is already taken by someone else
                     finalUsername = defaultUsername + "_" + (System.currentTimeMillis() % 10000);
                     userId = db.sql("""
                         INSERT INTO users (username, email, password_hash) VALUES (:u, :e, :p) RETURNING id
@@ -132,4 +133,3 @@ public class AuthController {
             throw new ResponseException(401, "Google authentication failed: " + e.getMessage());
         }
     }
-}
