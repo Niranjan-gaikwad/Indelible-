@@ -133,3 +133,4 @@ public class AuthController {
             throw new ResponseException(401, "Google authentication failed: " + e.getMessage());
         }
     }
+}
